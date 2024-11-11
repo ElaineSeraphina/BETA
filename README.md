@@ -12,6 +12,6 @@ Backoff Lebih Agresif: backoff maksimum dibatasi 2 detik dan bertambah secara le
 
 Fungsi create_trash_folder(): Membuat folder proxy_trash jika belum ada.
 
-Pemindahan Proxy Gagal: Proxy yang gagal dipindahkan ke file failed_proxies_.txt di dalam folder proxy_trash, yang disimpan berdasarkan waktu (timestamp).
+Pemindahan Proxy Gagal: Proxy yang gagal dipindahkan ke file proxies_trash.txt di dalam folder proxy_trash, yang disimpan berdasarkan waktu (timestamp).
 
 Log untuk Proxy Gagal: Setiap kali ada proxy gagal, file baru akan dibuat dalam folder proxy_trash, sehingga Anda memiliki rekaman yang mudah diakses tentang proxy yang bermasalah.
