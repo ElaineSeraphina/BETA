@@ -4,7 +4,7 @@ import ssl
 import json
 import time
 import uuid
-import os  # Untuk manajemen folder dan file
+import os
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
@@ -117,11 +117,11 @@ async def main():
     with open('local_proxies.txt', 'w') as file:
         file.write("\n".join(working_proxies))
 
-    # Pindahkan proxy yang gagal ke folder trash
+    # Pindahkan proxy yang gagal ke folder trash dalam file proxy_trash.txt
     trash_folder = create_trash_folder()
-    trash_file = os.path.join(trash_folder, f"failed_proxies_{int(time.time())}.txt")
-    with open(trash_file, 'w') as file:
-        file.write("\n".join(proxy_failures))
+    trash_file = os.path.join(trash_folder, "proxy_trash.txt")  # Gunakan file dengan nama yang konsisten
+    with open(trash_file, 'a') as file:  # Menambahkan proxy yang gagal ke file
+        file.write("\n".join(proxy_failures) + "\n")
 
     logger.info(f"Proses selesai. Proxy yang gagal telah dipindahkan ke {trash_file}.")
 
