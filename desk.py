@@ -5,12 +5,36 @@ import json
 import time
 import uuid
 import os
+import requests
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
+from subprocess import call
+
+REPO_URL = "https://github.com/LadyJ01/BETA.git"
+LOCAL_VERSION_FILE = "version.txt"
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 proxy_retry_limit = 5  # Batas maksimal percobaan ulang per proxy
+
+# Fungsi pembaruan otomatis dari GitHub
+def auto_update_script():
+    update_choice = input("\033[91mApakah Anda ingin mengunduh data terbaru dari GitHub? (Ya/Tidak):\033[0m ")
+    if update_choice.lower() == "ya":
+        logger.info("Memeriksa pembaruan skrip di GitHub...")
+        
+        # Lakukan `git pull` jika tersedia
+        if os.path.isdir(".git"):
+            call(["git", "pull"])
+            logger.info("Skrip diperbarui dari GitHub.")
+        else:
+            logger.warning("Repositori ini belum di-clone menggunakan git. Silakan clone menggunakan git untuk fitur auto-update.")
+            exit()
+    elif update_choice.lower() == "tidak":
+        logger.info("Melanjutkan tanpa pembaruan.")
+    else:
+        logger.warning("Pilihan tidak valid. Program dihentikan.")
+        exit()
 
 # Fungsi untuk membuat folder trash jika belum ada
 def create_trash_folder():
@@ -27,14 +51,13 @@ def check_activation_code():
         exit()  # Hentikan program jika kode salah
 
 async def generate_random_user_agent():
-    # Menghasilkan user-agent secara acak
     return user_agent.random
 
 async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
     async with semaphore:
         retries = 0
-        backoff = 0.5  # Mengurangi nilai backoff untuk mempercepat rotasi
-        device_id = str(uuid.uuid4())  # UUID yang acak tiap koneksi
+        backoff = 0.5
+        device_id = str(uuid.uuid4()) 
 
         while retries < proxy_retry_limit:
             try:
@@ -43,7 +66,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                     "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
                     "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
                     "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
-                    "DNT": "1",  # Header tambahan untuk privasi
+                    "DNT": "1",  
                     "Connection": "keep-alive"
                 }
 
@@ -63,7 +86,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                 "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
                             })
                             await websocket.send(ping_message)
-                            await asyncio.sleep(random.uniform(1, 3))  # Percepat interval PING menjadi 1-3 detik
+                            await asyncio.sleep(random.uniform(1, 3))
 
                     asyncio.create_task(send_ping())
 
@@ -98,33 +121,23 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
             except Exception as e:
                 retries += 1
                 logger.error("Gagal", color="<red>")
-                await asyncio.sleep(min(backoff, 2))  # Kurangi maksimum backoff menjadi 2 detik
-                backoff *= 1.2  # Kurangi faktor peningkatan backoff untuk mempercepat rotasi
+                await asyncio.sleep(min(backoff, 2)) 
+                backoff *= 1.2  
 
         if retries >= proxy_retry_limit:
             proxy_failures.append(socks5_proxy)
             logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
-async def load_proxies(filename):
-    # Membaca file dan menambahkan http:// jika tidak ada
-    proxies = []
-    with open(filename, 'r') as file:
-        for line in file:
-            line = line.strip()
-            # Menambahkan 'http://' jika tidak ada
-            if not line.startswith(('http://', 'https://')):
-                line = 'http://' + line
-            proxies.append(line)
-    return proxies
-
 async def main():
+    # Cek pembaruan skrip dari GitHub
+    auto_update_script()
+    
     # Periksa kode aktivasi sebelum melanjutkan
     check_activation_code()
     
     user_id = input("Masukkan user ID Anda: ")
-    
-    # Memuat proxy dari file dan menambahkan http:// jika tidak ada
-    local_proxies = await load_proxies('local_proxies.txt')
+    with open('local_proxies.txt', 'r') as file:
+        local_proxies = file.read().splitlines()
 
     semaphore = asyncio.Semaphore(100)
     proxy_failures = []
