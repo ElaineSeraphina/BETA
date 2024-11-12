@@ -5,21 +5,12 @@ import json
 import time
 import uuid
 import os
-import sys
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 proxy_retry_limit = 5  # Batas maksimal percobaan ulang per proxy
-
-# Konfigurasi loguru untuk menampilkan hanya level INFO ke atas
-logger.remove()
-logger.add(
-    sys.stdout, 
-    format="{time:HH:mm:ss} | {level} | {message}", 
-    level="INFO"
-)
 
 # Fungsi untuk membuat folder trash jika belum ada
 def create_trash_folder():
@@ -75,7 +66,8 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                         try:
                             response = await asyncio.wait_for(websocket.recv(), timeout=5)
                             message = json.loads(response)
-                            
+                            logger.info(f"Received message: {message}")
+
                             if message.get("action") == "AUTH":
                                 auth_response = {
                                     "id": message["id"],
@@ -93,19 +85,17 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                 await websocket.send(json.dumps(auth_response))
 
                             elif message.get("action") == "PONG":
-                                logger.info("Successful")  # Ganti teks 'PONG' dengan 'Successful'
                                 pong_response = {"id": message["id"], "origin_action": "PONG"}
+                                logger.success("Successful", color="<green>")  # Mengganti "PONG" dengan "Successful"
                                 await websocket.send(json.dumps(pong_response))
-                            else:
-                                logger.info(f"Received message: {message}")
 
                         except asyncio.TimeoutError:
-                            logger.warning("Timeout reached, reconnecting...")
+                            logger.warning("Reconnecting", color="<yellow>")  # Mengganti "Timeout reached" dengan "Reconnecting"
                             break
 
             except Exception as e:
                 retries += 1
-                logger.error(f"Error on {socks5_proxy}: {e} (Retry {retries}/{proxy_retry_limit})")
+                logger.error("Failed", color="<red>")  # Mengganti pesan error dengan "Failed"
                 await asyncio.sleep(min(backoff, 5))  # Batas maksimum backoff diatur ke 5 detik
                 backoff *= 1.5
 
