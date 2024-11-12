@@ -19,6 +19,13 @@ def create_trash_folder():
         os.makedirs(trash_folder)
     return trash_folder
 
+# Fungsi untuk memeriksa kode aktivasi
+def check_activation_code():
+    activation_code = input("Masukkan kode aktivasi: ")
+    if activation_code != "UJICOBA":
+        print("Kode aktivasi salah! Program dihentikan.")
+        exit()  # Hentikan program jika kode salah
+
 async def generate_random_user_agent():
     # Menghasilkan user-agent secara acak
     return user_agent.random
@@ -26,8 +33,7 @@ async def generate_random_user_agent():
 async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
     async with semaphore:
         retries = 0
-        backoff = 0.5  # Kurangi nilai backoff awal untuk mempercepat rotasi
-
+        backoff = 0.5  # Mengurangi nilai backoff untuk mempercepat rotasi
         device_id = str(uuid.uuid4())  # UUID yang acak tiap koneksi
 
         while retries < proxy_retry_limit:
@@ -40,7 +46,6 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                     "DNT": "1",  # Header tambahan untuk privasi
                     "Connection": "keep-alive"
                 }
-                logger.info(f"Connecting with device_id: {device_id}")
 
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
@@ -57,7 +62,6 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                             ping_message = json.dumps({
                                 "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
                             })
-                            logger.debug(f"Sending PING: {ping_message}")
                             await websocket.send(ping_message)
                             await asyncio.sleep(random.uniform(1, 3))  # Percepat interval PING menjadi 1-3 detik
 
@@ -67,7 +71,6 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                         try:
                             response = await asyncio.wait_for(websocket.recv(), timeout=5)
                             message = json.loads(response)
-                            logger.info(f"Received message: {message}")
 
                             if message.get("action") == "AUTH":
                                 auth_response = {
@@ -82,29 +85,30 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                         "version": "4.28.1",
                                     }
                                 }
-                                logger.debug(f"Sending AUTH response: {auth_response}")
                                 await websocket.send(json.dumps(auth_response))
 
                             elif message.get("action") == "PONG":
-                                pong_response = {"id": message["id"], "origin_action": "PONG"}
                                 logger.success("Successful", color="<green>")
-                                await websocket.send(json.dumps(pong_response))
+                                await websocket.send(json.dumps({"id": message["id"], "origin_action": "PONG"}))
 
                         except asyncio.TimeoutError:
-                            logger.warning("Reconnecting", color="<yellow>")
+                            logger.warning("Koneksi Ulang", color="<yellow>")
                             break
 
             except Exception as e:
                 retries += 1
-                logger.error("Failed", color="<red>")
+                logger.error("Gagal", color="<red>")
                 await asyncio.sleep(min(backoff, 2))  # Kurangi maksimum backoff menjadi 2 detik
                 backoff *= 1.2  # Kurangi faktor peningkatan backoff untuk mempercepat rotasi
 
         if retries >= proxy_retry_limit:
             proxy_failures.append(socks5_proxy)
-            logger.info(f"Proxy {socks5_proxy} telah dihapus setelah {proxy_retry_limit} percobaan.")
+            logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
 async def main():
+    # Periksa kode aktivasi sebelum melanjutkan
+    check_activation_code()
+    
     user_id = input("Masukkan user ID Anda: ")
     with open('local_proxies.txt', 'r') as file:
         local_proxies = file.read().splitlines()
