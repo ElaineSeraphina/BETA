@@ -105,13 +105,26 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
             proxy_failures.append(socks5_proxy)
             logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
+async def load_proxies(filename):
+    # Membaca file dan menambahkan http:// jika tidak ada
+    proxies = []
+    with open(filename, 'r') as file:
+        for line in file:
+            line = line.strip()
+            # Menambahkan 'http://' jika tidak ada
+            if not line.startswith(('http://', 'https://')):
+                line = 'http://' + line
+            proxies.append(line)
+    return proxies
+
 async def main():
     # Periksa kode aktivasi sebelum melanjutkan
     check_activation_code()
     
     user_id = input("Masukkan user ID Anda: ")
-    with open('local_proxies.txt', 'r') as file:
-        local_proxies = file.read().splitlines()
+    
+    # Memuat proxy dari file dan menambahkan http:// jika tidak ada
+    local_proxies = await load_proxies('local_proxies.txt')
 
     semaphore = asyncio.Semaphore(100)
     proxy_failures = []
