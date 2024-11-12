@@ -26,7 +26,8 @@ async def generate_random_user_agent():
 async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
     async with semaphore:
         retries = 0
-        backoff = 1
+        backoff = 0.5  # Kurangi nilai backoff awal untuk mempercepat rotasi
+
         device_id = str(uuid.uuid4())  # UUID yang acak tiap koneksi
 
         while retries < proxy_retry_limit:
@@ -58,7 +59,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                             })
                             logger.debug(f"Sending PING: {ping_message}")
                             await websocket.send(ping_message)
-                            await asyncio.sleep(random.uniform(2, 5))  # Jeda acak antara PING
+                            await asyncio.sleep(random.uniform(1, 3))  # Percepat interval PING menjadi 1-3 detik
 
                     asyncio.create_task(send_ping())
 
@@ -86,18 +87,18 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
 
                             elif message.get("action") == "PONG":
                                 pong_response = {"id": message["id"], "origin_action": "PONG"}
-                                logger.success("Successful", color="<green>")  # Mengganti "PONG" dengan "Successful"
+                                logger.success("Successful", color="<green>")
                                 await websocket.send(json.dumps(pong_response))
 
                         except asyncio.TimeoutError:
-                            logger.warning("Reconnecting", color="<yellow>")  # Mengganti "Timeout reached" dengan "Reconnecting"
+                            logger.warning("Reconnecting", color="<yellow>")
                             break
 
             except Exception as e:
                 retries += 1
-                logger.error("Failed", color="<red>")  # Mengganti pesan error dengan "Failed"
-                await asyncio.sleep(min(backoff, 5))  # Batas maksimum backoff diatur ke 5 detik
-                backoff *= 1.5
+                logger.error("Failed", color="<red>")
+                await asyncio.sleep(min(backoff, 2))  # Kurangi maksimum backoff menjadi 2 detik
+                backoff *= 1.2  # Kurangi faktor peningkatan backoff untuk mempercepat rotasi
 
         if retries >= proxy_retry_limit:
             proxy_failures.append(socks5_proxy)
