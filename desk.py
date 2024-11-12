@@ -5,32 +5,71 @@ import json
 import time
 import uuid
 import os
+import requests
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
+from subprocess import call
+
+REPO_URL = "https://github.com/LadyJ01/BETA.git"
+LOCAL_VERSION_FILE = "version.txt"
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 proxy_retry_limit = 5  # Batas maksimal percobaan ulang per proxy
 
+# Fungsi pembaruan otomatis dari GitHub
+def auto_update_script():
+    update_choice = input("\033[91mApakah Anda ingin mengunduh data terbaru dari GitHub? (Ya/Tidak):\033[0m ")
+    if update_choice.lower() == "ya":
+        logger.info("Memeriksa pembaruan skrip di GitHub...")
+        
+        # Lakukan `git pull` jika tersedia
+        if os.path.isdir(".git"):
+            call(["git", "pull"])
+            logger.info("Skrip diperbarui dari GitHub.")
+        else:
+            logger.warning("Repositori ini belum di-clone menggunakan git. Silakan clone menggunakan git untuk fitur auto-update.")
+            exit()
+    elif update_choice.lower() == "tidak":
+        logger.info("Melanjutkan tanpa pembaruan.")
+    else:
+        logger.warning("Pilihan tidak valid. Program dihentikan.")
+        exit()
+
+# Fungsi untuk membuat folder trash jika belum ada
+def create_trash_folder():
+    trash_folder = "proxy_trash"
+    if not os.path.exists(trash_folder):
+        os.makedirs(trash_folder)
+    return trash_folder
+
+# Fungsi untuk memeriksa kode aktivasi
+def check_activation_code():
+    activation_code = input("Masukkan kode aktivasi: ")
+    if activation_code != "UJICOBA":
+        print("Kode aktivasi salah! Program dihentikan.")
+        exit()  # Hentikan program jika kode salah
+
 async def generate_random_user_agent():
     return user_agent.random
 
-async def connect_to_wss(socks5_proxy, user_id, semaphore):
+async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
     async with semaphore:
         retries = 0
-        backoff = 1
-        device_id = str(uuid.uuid4())
+        backoff = 0.5
+        device_id = str(uuid.uuid4()) 
 
-        while True:  # Loop tak terbatas sampai koneksi berhasil
+        while retries < proxy_retry_limit:
             try:
                 custom_headers = {
                     "User-Agent": await generate_random_user_agent(),
                     "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
                     "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
                     "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
-                    "DNT": "1",
+                    "DNT": "1",  
                     "Connection": "keep-alive"
                 }
+
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
@@ -47,7 +86,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore):
                                 "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
                             })
                             await websocket.send(ping_message)
-                            await asyncio.sleep(random.uniform(2, 5))
+                            await asyncio.sleep(random.uniform(1, 3))
 
                     asyncio.create_task(send_ping())
 
@@ -55,6 +94,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore):
                         try:
                             response = await asyncio.wait_for(websocket.recv(), timeout=5)
                             message = json.loads(response)
+
                             if message.get("action") == "AUTH":
                                 auth_response = {
                                     "id": message["id"],
@@ -70,64 +110,54 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore):
                                 }
                                 await websocket.send(json.dumps(auth_response))
 
-                            elif message.get("action") == "PING":
-                                pong_response = {"id": message["id"], "origin_action": "PING"}
-                                await websocket.send(json.dumps(pong_response))
+                            elif message.get("action") == "PONG":
+                                logger.success("Successful", color="<green>")
+                                await websocket.send(json.dumps({"id": message["id"], "origin_action": "PONG"}))
 
                         except asyncio.TimeoutError:
-                            logger.warning("Reconnecting...")
-                            break  # Kembali ke awal loop untuk mencoba ulang proxy yang sama
+                            logger.warning("Koneksi Ulang", color="<yellow>")
+                            break
 
             except Exception as e:
                 retries += 1
-                logger.error(f"Failed to connect using proxy {socks5_proxy} (Retry {retries})")
-                await asyncio.sleep(min(backoff, 5))
-                backoff *= 1.5
-                if retries >= proxy_retry_limit:
-                    return False  # Mengembalikan status gagal untuk proxy ini
+                logger.error("Gagal", color="<red>")
+                await asyncio.sleep(min(backoff, 2)) 
+                backoff *= 1.2  
+
+        if retries >= proxy_retry_limit:
+            proxy_failures.append(socks5_proxy)
+            logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
 async def main():
+    # Cek pembaruan skrip dari GitHub
+    auto_update_script()
+    
+    # Periksa kode aktivasi sebelum melanjutkan
+    check_activation_code()
+    
     user_id = input("Masukkan user ID Anda: ")
+    with open('local_proxies.txt', 'r') as file:
+        local_proxies = file.read().splitlines()
+
     semaphore = asyncio.Semaphore(100)
+    proxy_failures = []
 
-    while True:
-        proxy_failures = []
-        
-        # Load proxies from local_proxies.txt
-        with open('local_proxies.txt', 'r') as file:
-            local_proxies = file.read().splitlines()
-        
-        # Try to connect with local proxies first
-        tasks = [connect_to_wss(proxy, user_id, semaphore) for proxy in local_proxies]
-        results = await asyncio.gather(*tasks)
-        
-        # Check which proxies failed and add them to proxy_failures
-        proxy_failures.extend([local_proxies[i] for i, success in enumerate(results) if not success])
+    tasks = [connect_to_wss(proxy, user_id, semaphore, proxy_failures) for proxy in local_proxies]
+    await asyncio.gather(*tasks)
 
-        if proxy_failures:
-            # Log proxies that failed
-            with open('proxy_trash.txt', 'a') as file:
-                file.write("\n".join(proxy_failures) + "\n")
+    working_proxies = [proxy for proxy in local_proxies if proxy not in proxy_failures]
 
-            # Load proxies from proxy_trash.txt if all local proxies failed
-            with open('proxy_trash.txt', 'r') as file:
-                trash_proxies = file.read().splitlines()
-            
-            # Retry with proxies from proxy_trash.txt
-            tasks = [connect_to_wss(proxy, user_id, semaphore) for proxy in trash_proxies]
-            results = await asyncio.gather(*tasks)
-            
-            # Filter proxies that still failed after retrying
-            proxy_failures = [trash_proxies[i] for i, success in enumerate(results) if not success]
-        
-        # Update local_proxies.txt with working proxies
-        working_proxies = [proxy for proxy in local_proxies + trash_proxies if proxy not in proxy_failures]
-        with open('local_proxies.txt', 'w') as file:
-            file.write("\n".join(working_proxies))
+    # Tulis proxy yang berhasil ke 'local_proxies.txt'
+    with open('local_proxies.txt', 'w') as file:
+        file.write("\n".join(working_proxies))
 
-        if not proxy_failures:
-            logger.info("All proxies successfully connected.")
-            break  # Stop if there are no more failed proxies to try again
+    # Pindahkan proxy yang gagal ke folder trash dalam file proxy_trash.txt
+    trash_folder = create_trash_folder()
+    trash_file = os.path.join(trash_folder, "proxy_trash.txt")
+    with open(trash_file, 'a') as file:
+        file.write("\n".join(proxy_failures) + "\n")
+
+    logger.info(f"Proses selesai. Proxy yang gagal telah dipindahkan ke {trash_file}.")
 
 if __name__ == '__main__':
     asyncio.run(main())
