@@ -5,12 +5,21 @@ import json
 import time
 import uuid
 import os
+import sys
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 proxy_retry_limit = 5  # Batas maksimal percobaan ulang per proxy
+
+# Konfigurasi loguru untuk menampilkan hanya level INFO ke atas
+logger.remove()
+logger.add(
+    sys.stdout, 
+    format="{time:HH:mm:ss} | {level} | {message}", 
+    level="INFO"
+)
 
 # Fungsi untuk membuat folder trash jika belum ada
 def create_trash_folder():
@@ -20,6 +29,7 @@ def create_trash_folder():
     return trash_folder
 
 async def generate_random_user_agent():
+    # Menghasilkan user-agent secara acak
     return user_agent.random
 
 async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
@@ -33,8 +43,10 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                 custom_headers = {
                     "User-Agent": await generate_random_user_agent(),
                     "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
-                    "Referer": "https://www.google.com/",
-                    "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4))))
+                    "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
+                    "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
+                    "DNT": "1",  # Header tambahan untuk privasi
+                    "Connection": "keep-alive"
                 }
                 logger.info(f"Connecting with device_id: {device_id}")
 
@@ -55,7 +67,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                             })
                             logger.debug(f"Sending PING: {ping_message}")
                             await websocket.send(ping_message)
-                            await asyncio.sleep(random.uniform(1, 3))  # Jeda acak lebih pendek
+                            await asyncio.sleep(random.uniform(2, 5))  # Jeda acak antara PING
 
                     asyncio.create_task(send_ping())
 
@@ -63,8 +75,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                         try:
                             response = await asyncio.wait_for(websocket.recv(), timeout=5)
                             message = json.loads(response)
-                            logger.info(f"Received message: {message}")
-
+                            
                             if message.get("action") == "AUTH":
                                 auth_response = {
                                     "id": message["id"],
@@ -82,9 +93,11 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                 await websocket.send(json.dumps(auth_response))
 
                             elif message.get("action") == "PONG":
+                                logger.info("Successful")  # Ganti teks 'PONG' dengan 'Successful'
                                 pong_response = {"id": message["id"], "origin_action": "PONG"}
-                                logger.debug(f"Sending PONG response: {pong_response}")
                                 await websocket.send(json.dumps(pong_response))
+                            else:
+                                logger.info(f"Received message: {message}")
 
                         except asyncio.TimeoutError:
                             logger.warning("Timeout reached, reconnecting...")
@@ -93,7 +106,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
             except Exception as e:
                 retries += 1
                 logger.error(f"Error on {socks5_proxy}: {e} (Retry {retries}/{proxy_retry_limit})")
-                await asyncio.sleep(min(backoff, 2))
+                await asyncio.sleep(min(backoff, 5))  # Batas maksimum backoff diatur ke 5 detik
                 backoff *= 1.5
 
         if retries >= proxy_retry_limit:
@@ -119,8 +132,8 @@ async def main():
 
     # Pindahkan proxy yang gagal ke folder trash dalam file proxy_trash.txt
     trash_folder = create_trash_folder()
-    trash_file = os.path.join(trash_folder, "proxy_trash.txt")  # Gunakan file dengan nama yang konsisten
-    with open(trash_file, 'a') as file:  # Menambahkan proxy yang gagal ke file
+    trash_file = os.path.join(trash_folder, "proxy_trash.txt")
+    with open(trash_file, 'a') as file:
         file.write("\n".join(proxy_failures) + "\n")
 
     logger.info(f"Proses selesai. Proxy yang gagal telah dipindahkan ke {trash_file}.")
