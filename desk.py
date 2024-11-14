@@ -5,14 +5,14 @@ import json
 import time
 import uuid
 import os
-import gc
-import sqlite3
+import redis
 from loguru import logger
 from websockets_proxy import Proxy, proxy_connect
 from fake_useragent import UserAgent
 from subprocess import call
-from datetime import datetime
-from typing import List
+
+# Konfigurasi Redis
+r = redis.Redis(host='localhost', port=6379, db=0)
 
 # Membaca konfigurasi dari file config.json
 def load_config():
@@ -21,9 +21,7 @@ def load_config():
         return {
             "proxy_retry_limit": 5,
             "reload_interval": 60,
-            "max_concurrent_connections": 50,
-            "batch_size": 10,
-            "rate_limit": 0.2
+            "max_concurrent_connections": 50
         }
     with open('config.json', 'r') as f:
         return json.load(f)
@@ -32,29 +30,21 @@ def load_config():
 if not os.path.exists('data'):
     os.makedirs('data')
 
-# Setup SQLite untuk menyimpan proxy yang berhasil dan gagal
-conn = sqlite3.connect('data/proxy_data.db')
-cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS proxy_status (
-                    proxy TEXT,
-                    status TEXT,
-                    last_checked TIMESTAMP)''')
-conn.commit()
-
+# Konfigurasi
 config = load_config()
 proxy_retry_limit = config["proxy_retry_limit"]
 reload_interval = config["reload_interval"]
 max_concurrent_connections = config["max_concurrent_connections"]
-batch_size = config["batch_size"]
-rate_limit = config["rate_limit"]
 
 user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
 
-# Fungsi pembaruan otomatis dari GitHub menggunakan API
+# Fungsi pembaruan otomatis dari GitHub
 def auto_update_script():
     update_choice = input("\033[91mApakah Anda ingin mengunduh data terbaru dari GitHub? (Y/N):\033[0m ")
     if update_choice.lower() == "y":
         logger.info("Memeriksa pembaruan skrip di GitHub...")
+        
+        # Lakukan `git pull` jika tersedia
         if os.path.isdir(".git"):
             call(["git", "pull"])
             logger.info("Skrip diperbarui dari GitHub.")
@@ -72,23 +62,17 @@ def check_activation_code():
     while True:
         activation_code = input("Masukkan kode aktivasi: ")
         if activation_code == "UJICOBA":
-            break
+            break  # Keluar jika kode benar
         else:
             print("Kode aktivasi salah! Silakan coba lagi.")
 
 async def generate_random_user_agent():
     return user_agent.random
 
-# Fungsi untuk menyimpan proxy ke database SQLite
-def save_proxy_to_db(proxy, status):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    cursor.execute("INSERT INTO proxy_status (proxy, status, last_checked) VALUES (?, ?, ?)", (proxy, status, timestamp))
-    conn.commit()
-
 async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
     async with semaphore:
         retries = 0
-        backoff = 0.5
+        backoff = 0.5  # Backoff mulai dari 0.5 detik
         device_id = str(uuid.uuid4())
 
         while retries < proxy_retry_limit:
@@ -98,7 +82,7 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                     "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
                     "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
                     "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
-                    "DNT": "1",
+                    "DNT": "1",  
                     "Connection": "keep-alive"
                 }
 
@@ -109,7 +93,8 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                 uri = random.choice(["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"])
                 proxy = Proxy.from_url(socks5_proxy)
 
-                async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname="proxy.wynd.network", extra_headers=custom_headers) as websocket:
+                async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname="proxy.wynd.network",
+                                         extra_headers=custom_headers) as websocket:
 
                     async def send_ping():
                         while True:
@@ -142,65 +127,83 @@ async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
                                 await websocket.send(json.dumps(auth_response))
 
                             elif message.get("action") == "PONG":
-                                logger.success("BERHASIL")
+                                logger.success("BERHASIL", color="<green>")
                                 await websocket.send(json.dumps({"id": message["id"], "origin_action": "PONG"}))
 
                         except asyncio.TimeoutError:
-                            logger.warning("Koneksi Ulang")
+                            logger.warning("Koneksi Ulang", color="<yellow>")
                             break
 
             except Exception as e:
                 retries += 1
-                logger.error(f"ERROR: {e}")
-                await asyncio.sleep(min(backoff, 2))
-                backoff *= 1.2
+                logger.error(f"ERROR: {e}", color="<red>")
+                await asyncio.sleep(min(backoff, 2))  # Exponential backoff
+                backoff *= 1.2  
 
         if retries >= proxy_retry_limit:
             proxy_failures.append(socks5_proxy)
-            save_proxy_to_db(socks5_proxy, "failed")
-            logger.info(f"Proxy {socks5_proxy} telah dihapus")
+            logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
 
+# Fungsi untuk memuat ulang daftar proxy dari Redis
 async def reload_proxy_list():
     while True:
+        # Tunggu selama interval reload
         await asyncio.sleep(reload_interval)
-        with open('local_proxies.txt', 'r') as file:
-            local_proxies = file.read().splitlines()
-        logger.info("Daftar proxy telah dimuat ulang.")
-        return local_proxies
+        
+        # Muat ulang daftar proxy dari Redis (dalam hal ini menggunakan set 'proxy_list')
+        local_proxies = r.smembers('proxy_list')
+        if not local_proxies:
+            logger.warning("Tidak ada proxy ditemukan di Redis. Tunggu beberapa saat.")
+        else:
+            logger.info("Daftar proxy telah dimuat ulang dari Redis.")
+        
+        return [proxy.decode('utf-8') for proxy in local_proxies]
 
 async def main():
+    # Cek pembaruan skrip dari GitHub
     auto_update_script()
+    
+    # Periksa kode aktivasi sebelum melanjutkan
     check_activation_code()
     
     user_id = input("Masukkan user ID Anda: ")
 
+    # Proses reload daftar proxy secara otomatis
     proxy_list_task = asyncio.create_task(reload_proxy_list())
 
-    semaphore = asyncio.Semaphore(max_concurrent_connections)
+    semaphore = asyncio.Semaphore(max_concurrent_connections)  # Batasi koneksi bersamaan
     proxy_failures = []
+
+    # Task queue untuk membagi beban
     queue = asyncio.Queue()
 
     while True:
+        # Tunggu jika daftar proxy baru sudah siap
         local_proxies = await proxy_list_task
+
+        # Menambahkan proxy ke queue
         for proxy in local_proxies:
             await queue.put(proxy)
 
         tasks = []
-        for _ in range(batch_size):
+        for _ in range(len(local_proxies)):
             task = asyncio.create_task(process_proxy(queue, user_id, semaphore, proxy_failures))
             tasks.append(task)
 
         await asyncio.gather(*tasks)
 
+        # Simpan proxy yang berhasil kembali ke Redis
         working_proxies = [proxy for proxy in local_proxies if proxy not in proxy_failures]
-        with open('data/successful_proxies.txt', 'w') as file:
-            file.write("\n".join(working_proxies))
+
+        for proxy in working_proxies:
+            r.sadd('active_proxies', proxy)  # Menambahkan proxy yang berhasil ke Redis set
 
         if not working_proxies:
             logger.info("Semua proxy gagal, menunggu untuk mencoba kembali...")
         else:
             logger.info(f"Proxy berhasil digunakan: {len(working_proxies)} proxy aktif.")
 
+        # Tunggu sebentar sebelum memulai percakapan berikutnya
         await asyncio.sleep(reload_interval)
 
 async def process_proxy(queue, user_id, semaphore, proxy_failures):
