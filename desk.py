@@ -1,215 +1,140 @@
-import asyncio
 import random
-import ssl
-import json
+import requests
 import time
-import uuid
-import os
-import redis
-from loguru import logger
-from websockets_proxy import Proxy, proxy_connect
-from fake_useragent import UserAgent
-from subprocess import call
+import logging
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from tenacity import retry, stop_after_attempt, wait_fixed
+import smtplib
+from email.mime.text import MIMEText
+import aiohttp
+import asyncio
 
-# Konfigurasi Redis
-r = redis.Redis(host='localhost', port=6379, db=0)
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Membaca konfigurasi dari file config.json
-def load_config():
-    if not os.path.exists('config.json'):
-        logger.warning("File config.json tidak ditemukan, menggunakan nilai default.")
-        return {
-            "proxy_retry_limit": 5,
-            "reload_interval": 60,
-            "max_concurrent_connections": 50
-        }
-    with open('config.json', 'r') as f:
-        return json.load(f)
+# Daftar proxy untuk digunakan
+proxies = ['proxy1', 'proxy2', 'proxy3']  # Ganti dengan daftar proxy yang benar
 
-# Membuat folder data jika belum ada
-if not os.path.exists('data'):
-    os.makedirs('data')
+# Fitur 1: Rotasi Proxy yang Lebih Cerdas
+def rotate_proxy(proxies):
+    batch_size = 10
+    selected_proxies = random.sample(proxies, batch_size)
+    return selected_proxies
 
-# Konfigurasi
-config = load_config()
-proxy_retry_limit = config["proxy_retry_limit"]
-reload_interval = config["reload_interval"]
-max_concurrent_connections = config["max_concurrent_connections"]
+# Fitur 2: Retry Logic dengan Tenacity
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+def make_request(proxy):
+    response = requests.get('http://example.com', proxies={"http": proxy}, timeout=10)
+    return response
 
-user_agent = UserAgent(os='windows', platforms='pc', browsers='chrome')
+# Penanganan Kesalahan dengan Logging
+def make_request_with_logging(proxy):
+    try:
+        response = make_request(proxy)
+        return response
+    except Exception as e:
+        logging.error(f"Error while making request with proxy {proxy}: {str(e)}")
+        return None
 
-# Fungsi pembaruan otomatis dari GitHub
-def auto_update_script():
-    update_choice = input("\033[91mApakah Anda ingin mengunduh data terbaru dari GitHub? (Y/N):\033[0m ")
-    if update_choice.lower() == "y":
-        logger.info("Memeriksa pembaruan skrip di GitHub...")
-        
-        # Lakukan `git pull` jika tersedia
-        if os.path.isdir(".git"):
-            call(["git", "pull"])
-            logger.info("Skrip diperbarui dari GitHub.")
-        else:
-            logger.warning("Repositori ini belum di-clone menggunakan git. Silakan clone menggunakan git untuk fitur auto-update.")
-            exit()
-    elif update_choice.lower() == "n":
-        logger.info("Melanjutkan tanpa pembaruan.")
-    else:
-        logger.warning("Pilihan tidak valid. Program dihentikan.")
-        exit()
-
-# Fungsi untuk memeriksa kode aktivasi
-def check_activation_code():
-    while True:
-        activation_code = input("Masukkan kode aktivasi: ")
-        if activation_code == "UJICOBA":
-            break  # Keluar jika kode benar
-        else:
-            print("Kode aktivasi salah! Silakan coba lagi.")
-
-async def generate_random_user_agent():
-    return user_agent.random
-
-async def connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures):
-    async with semaphore:
-        retries = 0
-        backoff = 0.5  # Backoff mulai dari 0.5 detik
-        device_id = str(uuid.uuid4())
-
-        while retries < proxy_retry_limit:
-            try:
-                custom_headers = {
-                    "User-Agent": await generate_random_user_agent(),
-                    "Accept-Language": random.choice(["en-US", "en-GB", "id-ID"]),
-                    "Referer": random.choice(["https://www.google.com/", "https://www.bing.com/"]),
-                    "X-Forwarded-For": ".".join(map(str, (random.randint(1, 255) for _ in range(4)))),
-                    "DNT": "1",  
-                    "Connection": "keep-alive"
-                }
-
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-
-                uri = random.choice(["wss://proxy.wynd.network:4444/", "wss://proxy.wynd.network:4650/"])
-                proxy = Proxy.from_url(socks5_proxy)
-
-                async with proxy_connect(uri, proxy=proxy, ssl=ssl_context, server_hostname="proxy.wynd.network",
-                                         extra_headers=custom_headers) as websocket:
-
-                    async def send_ping():
-                        while True:
-                            ping_message = json.dumps({
-                                "id": str(uuid.uuid4()), "version": "1.0.0", "action": "PING", "data": {}
-                            })
-                            await websocket.send(ping_message)
-                            await asyncio.sleep(random.uniform(1, 3))
-
-                    asyncio.create_task(send_ping())
-
-                    while True:
-                        try:
-                            response = await asyncio.wait_for(websocket.recv(), timeout=5)
-                            message = json.loads(response)
-
-                            if message.get("action") == "AUTH":
-                                auth_response = {
-                                    "id": message["id"],
-                                    "origin_action": "AUTH",
-                                    "result": {
-                                        "browser_id": device_id,
-                                        "user_id": user_id,
-                                        "user_agent": custom_headers['User-Agent'],
-                                        "timestamp": int(time.time()),
-                                        "device_type": "desktop",
-                                        "version": "4.28.1",
-                                    }
-                                }
-                                await websocket.send(json.dumps(auth_response))
-
-                            elif message.get("action") == "PONG":
-                                logger.success("BERHASIL", color="<green>")
-                                await websocket.send(json.dumps({"id": message["id"], "origin_action": "PONG"}))
-
-                        except asyncio.TimeoutError:
-                            logger.warning("Koneksi Ulang", color="<yellow>")
-                            break
-
-            except Exception as e:
-                retries += 1
-                logger.error(f"ERROR: {e}", color="<red>")
-                await asyncio.sleep(min(backoff, 2))  # Exponential backoff
-                backoff *= 1.2  
-
-        if retries >= proxy_retry_limit:
-            proxy_failures.append(socks5_proxy)
-            logger.info(f"Proxy {socks5_proxy} telah dihapus", color="<orange>")
-
-# Fungsi untuk memuat ulang daftar proxy dari Redis
-async def reload_proxy_list():
-    while True:
-        # Tunggu selama interval reload
-        await asyncio.sleep(reload_interval)
-        
-        # Muat ulang daftar proxy dari Redis (dalam hal ini menggunakan set 'proxy_list')
-        local_proxies = r.smembers('proxy_list')
-        if not local_proxies:
-            logger.warning("Tidak ada proxy ditemukan di Redis. Tunggu beberapa saat.")
-        else:
-            logger.info("Daftar proxy telah dimuat ulang dari Redis.")
-        
-        return [proxy.decode('utf-8') for proxy in local_proxies]
-
-async def main():
-    # Cek pembaruan skrip dari GitHub
-    auto_update_script()
+# Fitur 1: Pengelolaan Batching Proxy
+def process_proxies_in_batches(proxies):
+    batch_size = 10
+    batches = [proxies[i:i + batch_size] for i in range(0, len(proxies), batch_size)]
     
-    # Periksa kode aktivasi sebelum melanjutkan
-    check_activation_code()
-    
-    user_id = input("Masukkan user ID Anda: ")
+    for batch in batches:
+        results = [make_request_with_logging(proxy) for proxy in batch]
+        process_results(results)
 
-    # Proses reload daftar proxy secara otomatis
-    proxy_list_task = asyncio.create_task(reload_proxy_list())
-
-    semaphore = asyncio.Semaphore(max_concurrent_connections)  # Batasi koneksi bersamaan
-    proxy_failures = []
-
-    # Task queue untuk membagi beban
-    queue = asyncio.Queue()
-
-    while True:
-        # Tunggu jika daftar proxy baru sudah siap
-        local_proxies = await proxy_list_task
-
-        # Menambahkan proxy ke queue
-        for proxy in local_proxies:
-            await queue.put(proxy)
-
-        tasks = []
-        for _ in range(len(local_proxies)):
-            task = asyncio.create_task(process_proxy(queue, user_id, semaphore, proxy_failures))
-            tasks.append(task)
-
-        await asyncio.gather(*tasks)
-
-        # Simpan proxy yang berhasil kembali ke Redis
-        working_proxies = [proxy for proxy in local_proxies if proxy not in proxy_failures]
-
-        for proxy in working_proxies:
-            r.sadd('active_proxies', proxy)  # Menambahkan proxy yang berhasil ke Redis set
-
-        if not working_proxies:
-            logger.info("Semua proxy gagal, menunggu untuk mencoba kembali...")
+# Placeholder for processing results (tambahkan sesuai kebutuhan)
+def process_results(results):
+    for result in results:
+        if result:
+            logging.info(f"Request successful with response: {result.status_code}")
         else:
-            logger.info(f"Proxy berhasil digunakan: {len(working_proxies)} proxy aktif.")
+            logging.warning("Request failed.")
 
-        # Tunggu sebentar sebelum memulai percakapan berikutnya
-        await asyncio.sleep(reload_interval)
+# Fitur 4: Pengaturan Timeout dan Pemberitahuan Waktu Berjalan Lama
+def process_request_with_timeout(proxy):
+    start_time = time.time()
+    response = requests.get('http://example.com', proxies={"http": proxy}, timeout=10)
+    end_time = time.time()
+    
+    if end_time - start_time > 5:
+        logging.warning(f"Request with proxy {proxy} took longer than expected.")
+    
+    return response
 
-async def process_proxy(queue, user_id, semaphore, proxy_failures):
-    while not queue.empty():
-        socks5_proxy = await queue.get()
-        await connect_to_wss(socks5_proxy, user_id, semaphore, proxy_failures)
+# Fitur 5: Pembaruan Skrip secara Otomatis menggunakan Git
+def update_script():
+    try:
+        subprocess.run(["git", "pull"], check=True)
+        logging.info("Script updated successfully.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to update script: {e}")
 
+# Fitur 5: Pembaruan Dependensi dengan Pip
+def update_dependencies():
+    try:
+        subprocess.run(["pip", "install", "--upgrade", "requests"], check=True)
+        logging.info("Dependencies updated successfully.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Failed to update dependencies: {e}")
+
+# Fitur 6: Penggunaan Multi-threading untuk Proses Paralel
+def process_proxy(proxy):
+    response = make_request_with_logging(proxy)
+    return response
+
+def process_proxies_parallel(proxies):
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(process_proxy, proxies))
+    return results
+
+# Fitur 7: Notifikasi Melalui Email
+def send_email(subject, body, to_email):
+    msg = MIMEText(body)
+    msg['Subject'] = subject
+    msg['From'] = 'your-email@example.com'   # Ganti dengan email pengirim
+    msg['To'] = to_email
+    
+    try:
+        with smtplib.SMTP('smtp.example.com') as server:  # Ganti dengan SMTP server yang kamu gunakan
+            server.login('your-email@example.com', 'your-password')  # Ganti dengan login dan password email kamu
+            server.sendmail('your-email@example.com', to_email, msg.as_string())
+        logging.info(f"Notification email sent to {to_email}.")
+    except Exception as e:
+        logging.error(f"Failed to send email: {e}")
+
+# Fitur 8: Aiohttp untuk HTTP Non-Blocking
+async def fetch_url(url, session):
+    try:
+        async with session.get(url) as response:
+            return await response.text()
+    except Exception as e:
+        logging.error(f"Failed to fetch URL {url}: {e}")
+        return None
+
+async def process_urls_async(proxies):
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_url(f'http://example.com/{proxy}', session) for proxy in proxies]
+        html_pages = await asyncio.gather(*tasks)
+        logging.info("Asynchronous fetching completed.")
+        return html_pages
+
+# Contoh Pemakaian Skrip Utama
 if __name__ == "__main__":
-    asyncio.run(main())
+    rotated_proxies = rotate_proxy(proxies)
+    process_proxies_in_batches(rotated_proxies)
+    
+    update_script()
+    update_dependencies()
+    
+    send_email("Script Update", "Script has been updated successfully.", "recipient@example.com")  # Ganti dengan email penerima
+    
+    # Process proxies in parallel
+    results = process_proxies_parallel(proxies)
+    logging.info("Parallel processing completed.")
+
+    # Menjalankan Async
+    asyncio.run(process_urls_async(proxies))
