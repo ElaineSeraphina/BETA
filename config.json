@@ -1,7 +1,5 @@
 {
-  "proxy_retry_limit": 5,
-  "reload_interval": 60,
-  "max_concurrent_connections": 50,
-  "batch_size": 10,
-  "rate_limit": 0.2
+    "proxy_retry_limit": 5,
+    "reload_interval": 60,
+    "max_concurrent_connections": 200
 }
